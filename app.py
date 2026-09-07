@@ -18,15 +18,22 @@ from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel, Field
 
 from crew_runner import run_research
+from redaction import redact
 
 # ── logging ──────────────────────────────────────────────────────────────
 # Plain stdout logging: App Runner forwards stdout to CloudWatch Logs, so
-# anything printed here is searchable there without extra wiring.
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s %(levelname)s %(name)s %(message)s",
-    stream=sys.stdout,
-)
+# anything printed here is searchable there without extra wiring. Because
+# CloudWatch keeps what it is given, every record is redacted on the way out.
+
+
+class _RedactingFormatter(logging.Formatter):
+    def format(self, record: logging.LogRecord) -> str:
+        return redact(super().format(record))
+
+
+_handler = logging.StreamHandler(stream=sys.stdout)
+_handler.setFormatter(_RedactingFormatter("%(asctime)s %(levelname)s %(name)s %(message)s"))
+logging.basicConfig(level=logging.INFO, handlers=[_handler], force=True)
 logger = logging.getLogger("research-api")
 
 app = FastAPI(
@@ -155,7 +162,10 @@ def _execute(job_id: str, query: str) -> None:
 
     except Exception as exc:  # noqa: BLE001 - the job records the failure
         JOBS[job_id]["status"] = JobStatus.FAILED
-        JOBS[job_id]["error"] = f"{type(exc).__name__}: {exc}"[:500]
+        # The provider puts the API key in the request URL, so an upstream HTTP
+        # error carries it in str(exc). This field is served over HTTP by
+        # GET /jobs/{id}, so it is redacted before it is stored at all.
+        JOBS[job_id]["error"] = redact(f"{type(exc).__name__}: {exc}")[:500]
         logger.exception("job failed job_id=%s", job_id)
 
     finally:

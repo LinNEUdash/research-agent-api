@@ -22,10 +22,12 @@ from tasks import (
 
 logger = logging.getLogger(__name__)
 
-# The crew makes many model and tool calls per run. Capping requests per minute
-# keeps us inside third-party quotas and makes the cost of a single run
-# predictable.
-MAX_REQUESTS_PER_MINUTE = 10
+# The crew makes many model and tool calls per run, so requests per minute are
+# capped to stay inside the provider quota and keep the cost of a single run
+# predictable. This was originally 10, which is above the Gemini free tier's
+# limit of 5 requests per minute and produced 429s partway through a run. The
+# cap has to be set from the downstream quota, not guessed.
+MAX_REQUESTS_PER_MINUTE = 3
 
 
 def build_crew(query: str) -> Crew:
