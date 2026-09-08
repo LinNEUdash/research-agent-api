@@ -112,10 +112,49 @@ Containerised and running on AWS App Runner from an ECR image, with reports
 persisted to S3 through a scoped IAM task role and logs in CloudWatch.
 
 GitHub Actions runs the test suite on every push and, on `main`, builds and
-pushes the image to ECR. App Runner's automatic deployment picks up the new
-`:latest` tag and performs a rolling deploy.
+pushes the image to ECR. The deploy job declares `needs: test`, so a failing
+suite stops the pipeline before anything is built. App Runner's automatic
+deployment picks up the new `:latest` tag and performs a rolling deploy.
 
-See [RUNBOOK.md](RUNBOOK.md) for the full deployment steps.
+To stand it up in a fresh account:
+
+```bash
+# 1. Container registry
+aws ecr create-repository --repository-name research-agent-api --region us-east-1
+
+# 2. Report bucket, with public access blocked
+aws s3api create-bucket --bucket <your-bucket> --region us-east-1
+aws s3api put-public-access-block --bucket <your-bucket> \
+  --public-access-block-configuration \
+  "BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true"
+
+# 3. Build and push
+aws ecr get-login-password --region us-east-1 \
+  | docker login --username AWS --password-stdin <account>.dkr.ecr.us-east-1.amazonaws.com
+docker build --platform linux/amd64 -t research-agent-api .
+docker tag research-agent-api <account>.dkr.ecr.us-east-1.amazonaws.com/research-agent-api:latest
+docker push <account>.dkr.ecr.us-east-1.amazonaws.com/research-agent-api:latest
+```
+
+App Runner then needs two distinct roles, which is the step most likely to go
+wrong: an **ECR access role** so the service can pull the image, and an
+**instance (task) role** the running container assumes. Only the second one
+grants S3. The task role used here is scoped to a single prefix:
+
+```json
+{
+  "Effect": "Allow",
+  "Action": ["s3:PutObject", "s3:GetObject"],
+  "Resource": "arn:aws:s3:::<your-bucket>/reports/*"
+}
+```
+
+Runtime configuration is passed as App Runner environment variables
+(`GEMINI_API_KEY`, `SERPER_API_KEY`, `MODEL_NAME`, `S3_BUCKET`, `AWS_REGION`).
+Nothing secret is baked into the image; `.env` is excluded by `.dockerignore`.
+
+Build for `linux/amd64` explicitly. App Runner will not run an `arm64` image,
+and on an Apple Silicon machine that is the default the build produces.
 
 ## Things that broke, and what they changed
 
