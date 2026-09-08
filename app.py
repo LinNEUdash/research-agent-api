@@ -43,13 +43,31 @@ app = FastAPI(
 )
 
 S3_BUCKET = os.getenv("S3_BUCKET", "")
+AWS_REGION = os.getenv("AWS_REGION") or os.getenv("AWS_DEFAULT_REGION") or "us-east-1"
 
-_s3 = None
+# The client is built on first use, not at import. Constructing it eagerly made
+# boto3 go looking for credentials and a region while the module was still
+# loading; with no metadata service reachable it retried until it timed out, so
+# uvicorn never started and the container produced no output at all. Nothing
+# that reaches the network belongs in module scope.
+_s3_client = None
+
+
+def _s3():
+    """Return the S3 client, creating it on first call. None if S3 is off."""
+    global _s3_client
+    if not S3_BUCKET:
+        return None
+    if _s3_client is None:
+        import boto3
+
+        _s3_client = boto3.client("s3", region_name=AWS_REGION)
+        logger.info("s3 client created bucket=%s region=%s", S3_BUCKET, AWS_REGION)
+    return _s3_client
+
+
 if S3_BUCKET:
-    import boto3  # imported lazily so local runs need no AWS credentials
-
-    _s3 = boto3.client("s3")
-    logger.info("s3 persistence enabled bucket=%s", S3_BUCKET)
+    logger.info("s3 persistence enabled bucket=%s region=%s", S3_BUCKET, AWS_REGION)
 else:
     logger.info("s3 persistence disabled; reports kept in memory only")
 
@@ -125,8 +143,9 @@ def get_report(job_id: str) -> str:
 
     if job_id in REPORTS:
         return REPORTS[job_id]
-    if _s3 and job["report_key"]:
-        obj = _s3.get_object(Bucket=S3_BUCKET, Key=job["report_key"])
+    s3 = _s3()
+    if s3 and job["report_key"]:
+        obj = s3.get_object(Bucket=S3_BUCKET, Key=job["report_key"])
         return obj["Body"].read().decode("utf-8")
     raise HTTPException(status_code=404, detail="report not available")
 
@@ -146,9 +165,10 @@ def _execute(job_id: str, query: str) -> None:
         report = run_research(query)
         REPORTS[job_id] = report
 
-        if _s3:
+        s3 = _s3()
+        if s3:
             key = f"reports/{job_id}.md"
-            _s3.put_object(
+            s3.put_object(
                 Bucket=S3_BUCKET,
                 Key=key,
                 Body=report.encode("utf-8"),
