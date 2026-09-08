@@ -7,8 +7,8 @@ Give it a question. Three coordinated agents search the web, score every source
 they find against a weighted credibility rubric, and return a written report
 with confidence levels and a source ranking.
 
-**Live:** _(add your App Runner URL here after Phase 3)_
-**Interactive docs:** `<your-url>/docs`
+**Live:** https://ja4p86ndhc.us-east-1.awsapprunner.com
+**Interactive docs:** https://ja4p86ndhc.us-east-1.awsapprunner.com/docs
 
 ---
 
@@ -101,7 +101,7 @@ curl http://localhost:8000/jobs/<job_id>/report
 python -m pytest tests -q
 ```
 
-19 unit tests over the credibility scorer: domain tiers, date handling
+29 unit tests over the credibility scorer and the redaction layer: domain tiers, date handling
 (including missing and malformed dates), author and citation factors,
 end-to-end scoring for a strong and a weak source, and edge cases such as an
 empty URL and a URL with no scheme.
@@ -156,6 +156,20 @@ rejects. Upgrading litellm is not available as a fix because crewai pins it to
 one version. Changing models is not just changing a string; the client has to
 speak the format the model expects.
 
+**A network call at import time hung the container, and produced no logs to
+say so.**
+The first App Runner deploy failed health checks with an empty application log
+stream — the platform reported the container as unhealthy and nothing else.
+Architecture and memory both checked out, which ruled out the usual causes.
+Running the same image locally with the production environment variables
+reproduced it in two minutes: zero output, indefinitely. The cause was
+`boto3.client("s3")` at module scope. With no credentials in the environment
+boto3 falls back to the EC2 instance metadata endpoint, which is not reachable
+there, and retries until it times out — all before uvicorn binds a port or
+logging emits its first record, which is why there was nothing to read. The
+client is now built on first use. Anything that touches the network belongs
+behind a function, not in module scope.
+
 **A test depended on the day it was run.**
 `test_recent_date_scores_high` hard-coded `2026-03-01` and asserted "very
 recent". It passed when written and failed six months later once that date aged
@@ -167,8 +181,11 @@ today.
 - **Job state is in process memory.** It is lost on restart and does not work
   across more than one instance. Next step: DynamoDB.
 - **No authentication.** The endpoints are open. Next step: an API key check.
-- **IAM is broader than it needs to be.** Started with a permissive policy to
-  get the deploy working; it should be narrowed to the single bucket.
+- **CI authenticates with a long-lived access key.** The runtime role is scoped
+  to `s3:PutObject`/`s3:GetObject` on `reports/*` in one bucket, but the key
+  GitHub Actions uses to push images does not expire and has to be rotated by
+  hand. Next step: an OIDC trust policy, so Actions assumes a role per run and
+  no static credential exists at all.
 - **Redaction is pattern-based.** It catches the credential shapes seen so far.
   A provider using an unfamiliar format would slip through until a pattern is
   added for it.

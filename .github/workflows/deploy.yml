@@ -7,7 +7,7 @@ on:
 
 env:
   AWS_REGION: us-east-1
-  ECR_REPOSITORY: research-api
+  ECR_REPOSITORY: research-agent-api
 
 jobs:
   test:
