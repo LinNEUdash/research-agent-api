@@ -1,5 +1,7 @@
 # Research API
 
+[![Test and Deploy](https://github.com/LinNEUdash/research-agent-api/actions/workflows/deploy.yml/badge.svg)](https://github.com/LinNEUdash/research-agent-api/actions/workflows/deploy.yml)
+
 A multi-agent research pipeline exposed as an asynchronous HTTP service and
 deployed on AWS.
 
