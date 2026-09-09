@@ -14,7 +14,7 @@ from enum import Enum
 from typing import Optional
 
 from fastapi import BackgroundTasks, FastAPI, HTTPException
-from fastapi.responses import PlainTextResponse
+from fastapi.responses import PlainTextResponse, RedirectResponse
 from pydantic import BaseModel, Field
 
 from crew_runner import run_research
@@ -97,6 +97,16 @@ class JobResponse(BaseModel):
     finished_at: Optional[str] = None
     report_key: Optional[str] = None
     error: Optional[str] = None
+
+
+@app.get("/", include_in_schema=False)
+def root() -> RedirectResponse:
+    """Send the bare domain to the interactive docs.
+
+    Without this, opening the service URL returns FastAPI's 404 body, which
+    reads as a broken deployment to anyone who arrives at the root first.
+    """
+    return RedirectResponse(url="/docs")
 
 
 @app.get("/health", tags=["ops"])
