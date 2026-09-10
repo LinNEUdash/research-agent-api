@@ -7,13 +7,21 @@ Three agents with distinct roles:
   3. Analyst     — summarizes findings and scores source credibility
 """
 
-from crewai import Agent
-from crewai_tools import SerperDevTool, ScrapeWebsiteTool, FileReadTool
+from typing import Union
 
+from crewai import LLM, Agent
+from crewai_tools import SerperDevTool, FileReadTool
+
+from tools.bounded_scraper import BoundedScrapeWebsiteTool
 from tools.credibility_scorer import SourceCredibilityScorer
 
+# Only a fallback; crew_runner passes a configured LLM. gemini-2.0-flash used
+# to sit here and was retired by the provider, so a caller relying on the
+# default got a 404 rather than a working agent.
+DEFAULT_MODEL = "gemini/gemini-2.5-flash"
 
-def create_controller_agent(model: str = "gemini/gemini-2.0-flash") -> Agent:
+
+def create_controller_agent(model: Union[str, LLM] = DEFAULT_MODEL) -> Agent:
     """Controller agent — orchestrates the research workflow."""
     return Agent(
         role="Research Controller",
@@ -37,7 +45,7 @@ def create_controller_agent(model: str = "gemini/gemini-2.0-flash") -> Agent:
     )
 
 
-def create_researcher_agent(model: str = "gemini/gemini-2.0-flash") -> Agent:
+def create_researcher_agent(model: Union[str, LLM] = DEFAULT_MODEL) -> Agent:
     """Research agent — gathers information from the web."""
     return Agent(
         role="Web Researcher",
@@ -57,13 +65,13 @@ def create_researcher_agent(model: str = "gemini/gemini-2.0-flash") -> Agent:
         allow_delegation=False,
         tools=[
             SerperDevTool(),
-            ScrapeWebsiteTool(),
+            BoundedScrapeWebsiteTool(),
         ],
         llm=model,
     )
 
 
-def create_analyst_agent(model: str = "gemini/gemini-2.0-flash") -> Agent:
+def create_analyst_agent(model: Union[str, LLM] = DEFAULT_MODEL) -> Agent:
     """Analyst agent — evaluates, summarizes, and fact-checks findings."""
     return Agent(
         role="Research Analyst",

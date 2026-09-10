@@ -103,7 +103,8 @@ curl http://localhost:8000/jobs/<job_id>/report
 python -m pytest tests -q
 ```
 
-29 unit tests over the credibility scorer and the redaction layer: domain tiers, date handling
+35 unit tests over the credibility scorer, the redaction layer, and the scrape
+ceiling: domain tiers, date handling
 (including missing and malformed dates), author and citation factors,
 end-to-end scoring for a strong and a weak source, and edge cases such as an
 empty URL and a URL with no scheme.
@@ -151,9 +152,13 @@ grants S3. The task role used here is scoped to a single prefix:
 }
 ```
 
-Runtime configuration is passed as App Runner environment variables
-(`GEMINI_API_KEY`, `SERPER_API_KEY`, `MODEL_NAME`, `S3_BUCKET`, `AWS_REGION`).
-Nothing secret is baked into the image; `.env` is excluded by `.dockerignore`.
+Runtime configuration is passed as App Runner environment variables:
+`GEMINI_API_KEY`, `SERPER_API_KEY`, `LLM_MODEL`, `S3_BUCKET`, `AWS_REGION`, and
+optionally `MAX_SCRAPE_CHARS` and `LLM_NUM_RETRIES`. Nothing secret is baked
+into the image; `.env` is excluded by `.dockerignore`.
+
+Keeping the model name and the quota-related limits in the environment is what
+made two of the incidents below one-line recoveries instead of rebuilds.
 
 Build for `linux/amd64` explicitly. App Runner will not run an `arm64` image,
 and on an Apple Silicon machine that is the default the build produces.
@@ -171,6 +176,33 @@ cap is now 3, taken from the published quota rather than guessed. With it in
 place the crew waits for the next minute instead of failing — the run log shows
 `Max RPM reached, waiting for next minute to start` where it used to show a
 stack trace.
+
+**Capping requests did not cap tokens, and the second quota was the one that
+bit.**
+With `max_rpm=3` holding, a later run still died five minutes in:
+
+```
+Quota exceeded for metric:
+  generativelanguage.googleapis.com/generate_content_free_tier_input_token_count
+  limit: 250000, model: gemini-2.5-flash
+```
+
+That limit is measured in input tokens per minute, not calls, so the request
+cap has no effect on it. The scraper returned whole pages, boilerplate
+included, and the task chain forwards each stage's output to the next as
+context, so one long page is paid for three times. Three requests carrying a
+few hundred thousand characters clear 250,000 tokens comfortably while sitting
+well inside the call limit.
+
+`tools/bounded_scraper.py` puts a ceiling on what a single scrape can
+contribute, and says so in the text it returns rather than cutting silently, so
+the model reports a partial read instead of mistaking a fragment for the whole
+document. The model handle also carries a small retry budget for transient
+spikes. Neither is a fix for a quota that stays exhausted, which needs a paid
+tier, but the failure mode it was actually hitting is gone.
+
+The general shape: a rate limit is not one number. Check which metric the error
+names before deciding what to throttle.
 
 **The provider put the API key in the request URL, so it travelled into places
 it should not.**

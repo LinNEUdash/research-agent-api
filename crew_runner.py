@@ -6,14 +6,14 @@ handling and file writing stripped out so it can be called from a web request.
 
 import logging
 
-from crewai import Crew, Process
+from crewai import LLM, Crew, Process
 
 from agents import (
     create_analyst_agent,
     create_controller_agent,
     create_researcher_agent,
 )
-from config.settings import LLM_MODEL
+from config.settings import LLM_MODEL, LLM_NUM_RETRIES
 from tasks import (
     create_analysis_task,
     create_report_task,
@@ -27,14 +27,25 @@ logger = logging.getLogger(__name__)
 # predictable. This was originally 10, which is above the Gemini free tier's
 # limit of 5 requests per minute and produced 429s partway through a run. The
 # cap has to be set from the downstream quota, not guessed.
+#
+# This cap governs calls only. The free tier meters input tokens separately, at
+# 250,000 per minute, and three calls carrying long scraped pages can exceed
+# that while staying well under the call limit. Bounding the input is a
+# separate job, handled by tools.bounded_scraper.
 MAX_REQUESTS_PER_MINUTE = 3
+
+
+def build_llm() -> LLM:
+    """The shared model handle, with a retry budget for transient failures."""
+    return LLM(model=LLM_MODEL, num_retries=LLM_NUM_RETRIES)
 
 
 def build_crew(query: str) -> Crew:
     """Assemble the three-stage research crew for a single query."""
-    controller = create_controller_agent(model=LLM_MODEL)
-    researcher = create_researcher_agent(model=LLM_MODEL)
-    analyst = create_analyst_agent(model=LLM_MODEL)
+    llm = build_llm()
+    controller = create_controller_agent(model=llm)
+    researcher = create_researcher_agent(model=llm)
+    analyst = create_analyst_agent(model=llm)
 
     # Each task takes the previous one as context, which is how output flows
     # from stage to stage. Crew-level memory is off; the context chain is the
