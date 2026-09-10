@@ -13,10 +13,11 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import Optional
 
-from fastapi import BackgroundTasks, FastAPI, HTTPException
+from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException
 from fastapi.responses import PlainTextResponse, RedirectResponse
 from pydantic import BaseModel, Field
 
+from auth import require_api_key
 from crew_runner import run_research
 from redaction import redact
 
@@ -115,7 +116,13 @@ def health() -> dict:
     return {"status": "ok", "jobs_in_memory": len(JOBS)}
 
 
-@app.post("/research", response_model=JobResponse, status_code=202, tags=["research"])
+@app.post(
+    "/research",
+    response_model=JobResponse,
+    status_code=202,
+    tags=["research"],
+    dependencies=[Depends(require_api_key)],
+)
 def start_research(req: ResearchRequest, background: BackgroundTasks) -> dict:
     """Accept a research query and start the crew in the background."""
     job_id = str(uuid.uuid4())
@@ -133,7 +140,12 @@ def start_research(req: ResearchRequest, background: BackgroundTasks) -> dict:
     return JOBS[job_id]
 
 
-@app.get("/jobs/{job_id}", response_model=JobResponse, tags=["research"])
+@app.get(
+    "/jobs/{job_id}",
+    response_model=JobResponse,
+    tags=["research"],
+    dependencies=[Depends(require_api_key)],
+)
 def get_job(job_id: str) -> dict:
     """Return the current state of a job."""
     job = JOBS.get(job_id)
@@ -142,7 +154,12 @@ def get_job(job_id: str) -> dict:
     return job
 
 
-@app.get("/jobs/{job_id}/report", response_class=PlainTextResponse, tags=["research"])
+@app.get(
+    "/jobs/{job_id}/report",
+    response_class=PlainTextResponse,
+    tags=["research"],
+    dependencies=[Depends(require_api_key)],
+)
 def get_report(job_id: str) -> str:
     """Return the finished report as markdown."""
     job = JOBS.get(job_id)

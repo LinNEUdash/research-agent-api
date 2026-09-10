@@ -11,6 +11,8 @@ with confidence levels and a source ranking.
 
 **Live:** https://ja4p86ndhc.us-east-1.awsapprunner.com
 **Interactive docs:** https://ja4p86ndhc.us-east-1.awsapprunner.com/docs
+**What it produces:** [examples/sample-report.md](examples/sample-report.md) — a
+real run, copied from S3 unedited.
 
 ---
 
@@ -103,8 +105,8 @@ curl http://localhost:8000/jobs/<job_id>/report
 python -m pytest tests -q
 ```
 
-35 unit tests over the credibility scorer, the redaction layer, and the scrape
-ceiling: domain tiers, date handling
+46 unit tests over the credibility scorer, the redaction layer, the scrape
+ceiling, and the API key gate: domain tiers, date handling
 (including missing and malformed dates), author and citation factors,
 end-to-end scoring for a strong and a weak source, and edge cases such as an
 empty URL and a URL with no scheme.
@@ -153,15 +155,34 @@ grants S3. The task role used here is scoped to a single prefix:
 ```
 
 Runtime configuration is passed as App Runner environment variables:
-`GEMINI_API_KEY`, `SERPER_API_KEY`, `LLM_MODEL`, `S3_BUCKET`, `AWS_REGION`, and
-optionally `MAX_SCRAPE_CHARS` and `LLM_NUM_RETRIES`. Nothing secret is baked
-into the image; `.env` is excluded by `.dockerignore`.
+`GEMINI_API_KEY`, `SERPER_API_KEY`, `LLM_MODEL`, `S3_BUCKET`, `AWS_REGION`,
+`API_KEY`, and optionally `MAX_SCRAPE_CHARS` and `LLM_NUM_RETRIES`. Nothing
+secret is baked into the image; `.env` is excluded by `.dockerignore`.
 
 Keeping the model name and the quota-related limits in the environment is what
 made two of the incidents below one-line recoveries instead of rebuilds.
 
 Build for `linux/amd64` explicitly. App Runner will not run an `arm64` image,
 and on an Apple Silicon machine that is the default the build produces.
+
+## Authentication
+
+`POST /research` and both job endpoints require an `X-API-Key` header matching
+the `API_KEY` environment variable. `/health` and `/docs` stay open: App Runner
+polls `/health` every twenty seconds to decide whether the instance is alive,
+and a 401 there would get the container killed and restarted.
+
+When `API_KEY` is unset the check passes, so local runs and CI need no
+configuration. The comparison uses `secrets.compare_digest` rather than `==`,
+which returns early on the first wrong character and leaks how much of a guess
+was right.
+
+This is not about keeping data private; nothing here is secret. It is about the
+bill. A run costs fifteen calls against a twenty-per-day quota, so one stranger
+who finds the URL can exhaust it for the rest of the day. An open endpoint in
+front of a metered upstream hands the invoice to whoever finds it first.
+
+The scheme is declared to FastAPI, so `/docs` renders an Authorize button.
 
 ## Things that broke, and what they changed
 
@@ -253,7 +274,10 @@ today.
 
 - **Job state is in process memory.** It is lost on restart and does not work
   across more than one instance. Next step: DynamoDB.
-- **No authentication.** The endpoints are open. Next step: an API key check.
+- **One run per day on the free tier.** A run makes about fifteen model calls
+  and the free tier allows twenty per day, so the second run of any day dies
+  partway through with a 429. Raising this is a billing decision, not a code
+  one. The number is worth knowing before promising anyone a live demo.
 - **CI authenticates with a long-lived access key.** The runtime role is scoped
   to `s3:PutObject`/`s3:GetObject` on `reports/*` in one bucket, but the key
   GitHub Actions uses to push images does not expire and has to be rotated by
