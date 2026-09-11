@@ -161,26 +161,68 @@ def get_job(job_id: str) -> dict:
     dependencies=[Depends(require_api_key)],
 )
 def get_report(job_id: str) -> str:
-    """Return the finished report as markdown."""
+    """Return the finished report, from memory if it is there and S3 if not.
+
+    An earlier version looked the job up in JOBS first and returned 404 when it
+    was missing. Because JOBS and REPORTS are filled together, that meant the
+    S3 branch could never run: a job in memory always had its report in memory
+    too, and a job not in memory was refused before S3 was consulted. Restarts
+    made it worse rather than better, since they clear both. S3 held every
+    report and served none of them.
+
+    A finished report is identified entirely by its key, so it can be read back
+    without any job record at all. That is what makes the bucket a recovery
+    path instead of an archive nobody can reach.
+    """
     job = JOBS.get(job_id)
-    if job is None:
-        raise HTTPException(status_code=404, detail="job not found")
-    if job["status"] != JobStatus.DONE:
+    if job is not None and job["status"] != JobStatus.DONE:
         raise HTTPException(status_code=409, detail=f"job is {job['status'].value}, not done")
 
     if job_id in REPORTS:
         return REPORTS[job_id]
-    s3 = _s3()
-    if s3 and job["report_key"]:
-        obj = s3.get_object(Bucket=S3_BUCKET, Key=job["report_key"])
-        return obj["Body"].read().decode("utf-8")
-    raise HTTPException(status_code=404, detail="report not available")
+
+    report = _load_report_from_s3(job_id)
+    if report is not None:
+        return report
+
+    detail = "job not found" if job is None else "report not available"
+    raise HTTPException(status_code=404, detail=detail)
 
 
 # ── internals ────────────────────────────────────────────────────────────
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _report_key(job_id: str) -> str:
+    """Where a job's report lives. One definition, used to write and to read."""
+    return f"reports/{job_id}.md"
+
+
+def _load_report_from_s3(job_id: str) -> Optional[str]:
+    """Fetch a report by job id, or None if S3 is off or has no such object."""
+    s3 = _s3()
+    if s3 is None:
+        return None
+
+    # job_id reaches this function straight from the URL and is about to become
+    # part of an S3 key, so it is checked against the shape the service issues.
+    # Anything else is not a job this service ever created.
+    try:
+        uuid.UUID(job_id)
+    except ValueError:
+        return None
+
+    from botocore.exceptions import ClientError
+
+    try:
+        obj = s3.get_object(Bucket=S3_BUCKET, Key=_report_key(job_id))
+    except ClientError as exc:
+        if exc.response.get("Error", {}).get("Code") in ("NoSuchKey", "404"):
+            return None
+        raise
+    return obj["Body"].read().decode("utf-8")
 
 
 def _execute(job_id: str, query: str) -> None:
@@ -194,7 +236,7 @@ def _execute(job_id: str, query: str) -> None:
 
         s3 = _s3()
         if s3:
-            key = f"reports/{job_id}.md"
+            key = _report_key(job_id)
             s3.put_object(
                 Bucket=S3_BUCKET,
                 Key=key,

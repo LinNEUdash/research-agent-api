@@ -105,8 +105,8 @@ curl http://localhost:8000/jobs/<job_id>/report
 python -m pytest tests -q
 ```
 
-46 unit tests over the credibility scorer, the redaction layer, the scrape
-ceiling, and the API key gate: domain tiers, date handling
+56 unit tests over the credibility scorer, the redaction layer, the scrape
+ceiling, the API key gate, and report retrieval: domain tiers, date handling
 (including missing and malformed dates), author and citation factors,
 end-to-end scoring for a strong and a weak source, and edge cases such as an
 empty URL and a URL with no scheme.
@@ -264,6 +264,33 @@ logging emits its first record, which is why there was nothing to read. The
 client is now built on first use. Anything that touches the network belongs
 behind a function, not in module scope.
 
+**The persistence layer was write-only, and the ordering of two lookups is
+what made it so.**
+`GET /jobs/{id}/report` looked the job up in memory first and returned 404 when
+it was missing, then checked memory for the report, then S3. Because a job
+record and its report are created together, a job present in memory always had
+its report in memory, and a job absent from memory was refused before S3 was
+ever consulted. The S3 branch could not execute. Restarts did not help, since
+they clear both. Every report was being stored and none could be read back.
+
+Nothing failed, which is why it survived several runs: the endpoint returned
+correct answers the whole time, for the cases anyone had tried. It only showed
+up when the question changed from "does this work" to "which lines actually
+run".
+
+A finished report is identified entirely by its key, so it needs no job record
+to be found. The lookup now goes memory, then S3, then 404, and the key is
+built by one function used by both the write and the read. The job id is
+validated as a UUID before it becomes part of a key.
+
+**Tests passed in CI and failed on the machine that wrote them.**
+`config.settings` calls `load_dotenv()` at import, so a local `.env` lands in
+`os.environ` for the whole test session. Adding `API_KEY` to that file turned
+every test request 401 locally while CI, which has no `.env`, stayed green. A
+suite whose result depends on an untracked file is not reporting on the code.
+`tests/conftest.py` now clears the variable by default; tests that care about
+it set it themselves.
+
 **A test depended on the day it was run.**
 `test_recent_date_scores_high` hard-coded `2026-03-01` and asserted "very
 recent". It passed when written and failed six months later once that date aged
@@ -272,8 +299,11 @@ today.
 
 ## Known limits and what is next
 
-- **Job state is in process memory.** It is lost on restart and does not work
-  across more than one instance. Next step: DynamoDB.
+- **Job state is in process memory.** A restart loses every job record, so
+  `GET /jobs/{id}` returns 404 for work that did finish, and the same gap is
+  what stops more than one instance from working. Finished reports survive,
+  since those are read back from S3 by key, but a job's status and query do
+  not. Next step: DynamoDB for the records themselves.
 - **One run per day on the free tier.** A run makes about fifteen model calls
   and the free tier allows twenty per day, so the second run of any day dies
   partway through with a 429. Raising this is a billing decision, not a code
